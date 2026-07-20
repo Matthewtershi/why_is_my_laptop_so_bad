@@ -1,0 +1,37 @@
+[package]
+name = "sheet-shortcut"
+version = "0.1.0"
+description = "Quick-add internship applications to a Google Sheet"
+authors = ["Matthew Tershi"]
+edition = "2021"
+
+[lib]
+# The `_lib` suffix keeps the lib name unique so it won't conflict with the
+# bin name (a Windows-specific cargo quirk).
+name = "sheet_shortcut_lib"
+# Desktop-only build: the binary links the lib as an `rlib`. The `cdylib`/
+# `staticlib` types are only needed for mobile, and building the cdylib DLL
+# trips a GNU-ld "export ordinal too large" bug, so we omit them here.
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# native-tls => SChannel on Windows: no OpenSSL, no C compiler needed on the
+# GNU toolchain. Only http1 + json to keep the build lean.
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
+
+[profile.release]
+# Smaller, faster-to-ship binary for a tiny tray app.
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
