@@ -11,9 +11,17 @@ Company │ Date Submitted │ Link │ Status
 
 - **Fast:** lives in the system tray, so the hotkey summons an already-running
   window instantly (no cold start).
-- **Small:** a ~400×340 window, styled as a designer's **sketchbook page** —
+- **Small:** a ~440×396 window, styled as a designer's **sketchbook page** —
   felt-tip ink on dot-grid paper, wobbly hand-drawn boxes, diagonal hatching,
   and a yellow highlighter marking the active tab.
+- **Two sections** via the right-hand tab rail — or **Ctrl+Tab** to toggle, or
+  **Ctrl+Alt+1 / Ctrl+Alt+2** to jump directly (the full shortcut list lives in
+  the in-app Settings ⚙):
+  - **Notes** — a notepad.exe-style plain-text editor with line numbers and
+    multiple named tabs you can add (`+`), rename (double-click), and close
+    (`×`). Notes persist in the WebView's `localStorage`, so closing/reopening
+    keeps everything.
+  - **Sheet** — the internship quick-add (below).
 - **No Google Cloud / OAuth:** writes through a ~15-line Apps Script web app.
 
 ---
