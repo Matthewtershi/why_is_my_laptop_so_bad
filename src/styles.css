@@ -419,6 +419,24 @@ body {
 .rows::-webkit-scrollbar { width: 7px; }
 .rows::-webkit-scrollbar-thumb { background: rgba(27,27,25,.22); border-radius: 4px; }
 
+/* ---------- settings ---------- */
+.field label .hint {
+  font-size: 10px;
+  color: var(--ink-faint);
+  text-transform: none;
+  letter-spacing: 0;
+}
+.set-actions { display: flex; flex-direction: column; }
+.set-actions .linkback { margin-top: 5px; }
+.ver-row {
+  flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: space-between;
+  margin-top: 8px; padding-top: 6px;
+  font-size: 11px; color: var(--ink-faint);
+}
+.ver-row .ver { color: var(--ink-faint); }
+.ver-row .linkback { margin-top: 0; font-size: 11px; }
+
 /* ---------- settings: shortcuts list ---------- */
 #settings .field { margin-bottom: 7px; }
 #settings .primary { margin-top: 5px; padding: 8px; }

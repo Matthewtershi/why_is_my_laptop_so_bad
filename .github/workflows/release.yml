@@ -1,0 +1,47 @@
+name: release
+
+# Push a version tag (e.g. v0.2.1) to build, sign, and publish a release.
+# The installed app checks the release's latest.json and updates itself.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Rust (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Build, sign & publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Set these two in the repo: Settings -> Secrets and variables -> Actions
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "NotePad+++ ${{ github.ref_name }}"
+          releaseBody: "The app updates itself automatically. Or download the setup .exe below to install manually."
+          releaseDraft: false
+          prerelease: false
