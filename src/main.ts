@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 
 const appWindow = getCurrentWindow();
 
@@ -318,7 +320,10 @@ async function submitEntry(e: Event) {
       link: link.value.trim(),
       status: status.value,
     });
-    if (!res?.ok) throw new Error(res?.error ?? "Sheet rejected the write");
+    if (!res?.ok) {
+      const err = String(res?.error ?? "Sheet rejected the write");
+      throw new Error(err.toLowerCase() === "unauthorized" ? "token rejected — check the SECRET in Code.gs" : err);
+    }
     save.classList.add("ok");
     if (editingRow) {
       showFlash("Row updated ✓", "ok");
@@ -342,6 +347,25 @@ async function submitEntry(e: Event) {
 }
 
 // =====================================================================
+//  auto-update
+// =====================================================================
+async function checkForUpdates(manual = false) {
+  try {
+    const update = await check();
+    if (update) {
+      showFlash(`update ${update.version} found — installing…`, "");
+      await update.downloadAndInstall();
+      showFlash("updated ✓ — restarting", "ok");
+      setTimeout(() => relaunch(), 900);
+    } else if (manual) {
+      showFlash("you're on the latest version ✓", "ok");
+    }
+  } catch {
+    if (manual) showFlash("update check failed — try again later", "err");
+  }
+}
+
+// =====================================================================
 //  settings
 // =====================================================================
 async function loadSettings() {
@@ -359,6 +383,25 @@ async function saveSettings() {
   }
 }
 
+// Save the entered values, then hit the webhook so the user gets an immediate,
+// specific verdict instead of a silent failure later.
+async function testConnection() {
+  if (!webhook.value.trim()) return showFlash("Enter the web-app URL first", "err");
+  try {
+    await invoke("save_config", { webhookUrl: webhook.value.trim(), token: token.value.trim() });
+  } catch {}
+  showFlash("testing…", "");
+  try {
+    const res: any = await invoke("fetch_recent", { limit: 1 });
+    if (res?.ok) return showFlash("connected ✓ — sheet reachable", "ok");
+    if (String(res?.error).toLowerCase().includes("unauthorized"))
+      return showFlash("token rejected — use the SECRET from Code.gs, not the URL", "err");
+    showFlash(res?.error ?? "connection failed", "err");
+  } catch {
+    showFlash("couldn't reach the URL — check the /exec link is right", "err");
+  }
+}
+
 // =====================================================================
 //  wiring
 // =====================================================================
@@ -370,6 +413,8 @@ entry.addEventListener("submit", submitEntry);
 editBack.addEventListener("click", showEditList);
 $("refresh").addEventListener("click", showEditList);
 $("save-settings").addEventListener("click", saveSettings);
+$("test-conn").addEventListener("click", testConnection);
+$("check-updates").addEventListener("click", () => checkForUpdates(true));
 $("btn-close").addEventListener("click", () => {
   persistNotes();
   appWindow.hide();
@@ -413,4 +458,6 @@ listen("reset-focus", () => {
   renderDocTabs();
   loadActiveIntoEditor();
   showTab("notes");
+  // silent background update check shortly after launch
+  setTimeout(() => checkForUpdates(false), 3500);
 })();

@@ -131,12 +131,15 @@
               <div class="box sketch"><input id="webhook" spellcheck="false" placeholder="https://script.google.com/…/exec" /></div>
             </div>
             <div class="field">
-              <label for="token">Secret token</label>
+              <label for="token">Secret token <span class="hint">— the SECRET in Code.gs, not the URL</span></label>
               <div class="box sketch sketch--b"><input id="token" type="password" spellcheck="false" placeholder="shared secret" /></div>
             </div>
-            <button type="button" id="save-settings" class="primary">
-              <span class="lbl">Save settings</span>
-            </button>
+            <div class="set-actions">
+              <button type="button" id="save-settings" class="primary">
+                <span class="lbl">Save settings</span>
+              </button>
+              <button type="button" id="test-conn" class="linkback">test connection</button>
+            </div>
 
             <div class="shortcuts">
               <div class="sc-title">— keyboard shortcuts —</div>
@@ -149,6 +152,10 @@
                 <li><span class="keys"><kbd>Esc</kbd></span><span class="sc-desc">hide to tray</span></li>
               </ul>
               <div class="sc-note">notes: double-click a tab to rename &middot; <b>+</b> new &middot; <b>&times;</b> close</div>
+            </div>
+            <div class="ver-row">
+              <span class="ver">v0.2.0</span>
+              <button type="button" id="check-updates" class="linkback">check for updates</button>
             </div>
           </section>
         </main>
