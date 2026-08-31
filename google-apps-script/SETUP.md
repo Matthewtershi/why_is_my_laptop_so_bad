@@ -27,7 +27,7 @@ Open your internships spreadsheet. Row 1 must be these headers, in this order:
 1. Top right: **Deploy → New deployment**.
 2. Gear icon → **Web app**.
 3. Configure:
-   - **Description:** anything (e.g. `sheet-shortcut`)
+   - **Description:** anything (e.g. `notepad-plus-plus-plus`)
    - **Execute as:** **Me**
    - **Who has access:** **Anyone with the link**
      *(the secret token is what actually protects it — see note below)*
@@ -36,7 +36,7 @@ Open your internships spreadsheet. Row 1 must be these headers, in this order:
 5. Copy the **Web app URL**. It ends in `/exec`. This is your webhook URL.
 
 ### 4. Put it into the app
-Open Sheet Shortcut (it opens to Settings on first run), and paste:
+Open Notepad+++ (it opens to Settings on first run), and paste:
 - **Apps Script web-app URL** → the `/exec` URL
 - **Secret token** → the exact value you set in step 2
 
@@ -49,6 +49,12 @@ Save. Press **Ctrl+Alt+Space** anywhere and add your first application.
   personal Apps Script webhook. The URL alone does nothing without the token;
   every request is rejected unless the token matches. Keep the URL/token
   private (they're stored locally in your app config, not in the code).
+- **Updating an existing install (v0.3.0):** `Code.gs` changed — it now reads
+  dates in the **spreadsheet's** timezone instead of the script project's, and
+  leaves the Date cell alone when an edit didn't change it. Re-paste the file
+  and re-deploy (below) to pick that up. The app-side half of the fix ships in
+  v0.3.0 and works against the old script too, so this is worth doing but not
+  urgent.
 - **Re-deploying:** if you edit `Code.gs` later, use
   **Deploy → Manage deployments → (edit) → New version** so the `/exec` URL
   stays the same. Creating a *new* deployment gives a new URL you'd have to

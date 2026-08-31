@@ -26,6 +26,30 @@ fn load_config(app: &AppHandle) -> Config {
         .unwrap_or_default()
 }
 
+/// v0.2 shipped under the product name "Sheet Shortcut". The NSIS uninstall
+/// key is keyed on the product name, so the renamed installer lands beside the
+/// old copy rather than replacing it. Drop the old copy's launch-on-login entry
+/// so the two don't race for the global hotkey at the next login. (Actually
+/// uninstalling it is destructive, so that's left to the user.)
+#[cfg(windows)]
+fn drop_legacy_autostart() {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let _ = std::process::Command::new("reg")
+        .args([
+            "delete",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+            "/v",
+            "Sheet Shortcut",
+            "/f",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+}
+
+#[cfg(not(windows))]
+fn drop_legacy_autostart() {}
+
 /// Show + focus the window and tell the UI to reset to Add mode / focus Company.
 fn show_window(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
@@ -91,10 +115,15 @@ async fn submit_entry(
         "token": cfg.token,
         "action": action,
         "company": company,
-        "date": date,
         "link": link,
         "status": status,
     });
+    // An empty date means "leave the cell alone" — the UI sends that when an
+    // edit didn't touch the date, so changing only the Status can't rewrite
+    // (and re-round-trip) the date the sheet already holds.
+    if !date.is_empty() {
+        body["date"] = serde_json::json!(date);
+    }
     if let Some(r) = row {
         body["row"] = serde_json::json!(r);
     }
@@ -191,6 +220,7 @@ pub fn run() {
             // Launch on login so the hotkey is always available.
             use tauri_plugin_autostart::ManagerExt;
             let _ = app.autolaunch().enable();
+            drop_legacy_autostart();
 
             // System tray: left-click opens; menu has Open / Quit.
             let open_i = MenuItem::with_id(app, "open", "Open  (Ctrl+Alt+Space)", true, None::<&str>)?;
@@ -198,7 +228,7 @@ pub fn run() {
             let menu = Menu::with_items(app, &[&open_i, &quit_i])?;
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("NotePad+++ — Ctrl+Alt+Space")
+                .tooltip("Notepad+++ — Ctrl+Alt+Space")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {

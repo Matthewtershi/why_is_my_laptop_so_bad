@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { check } from "@tauri-apps/plugin-updater";
@@ -39,6 +40,13 @@ const flash = $("flash");
 let activeTab: Tab = "notes";
 let editingRow: number | null = null;
 let flashTimer: number | undefined;
+// The date the row already had when an edit was opened. If it comes back
+// untouched we send "" so the backend omits the field entirely and the sheet
+// keeps its own value — changing only the Status must not rewrite the date.
+let originalDate = "";
+// Last rows we fetched, so an edit can go straight back to the list without
+// waiting on a round trip.
+let lastRows: Row[] = [];
 
 const todayISO = () => {
   const d = new Date();
@@ -112,6 +120,8 @@ function renderDocTabs() {
   for (const n of notes) {
     const tab = document.createElement("div");
     tab.className = "doc-tab" + (n.id === activeId ? " is-active" : "");
+    tab.dataset.id = n.id;
+    tab.title = `${n.name} — double-click (or F2) to rename`;
     const nm = document.createElement("span");
     nm.className = "nm";
     nm.textContent = n.name;
@@ -132,6 +142,11 @@ function renderDocTabs() {
       e.preventDefault();
       beginRename(tab, n);
     });
+    // Right-click renames too — double-click isn't discoverable on its own.
+    tab.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      beginRename(tab, n);
+    });
     docTabs.appendChild(tab);
   }
   const add = document.createElement("button");
@@ -143,10 +158,21 @@ function renderDocTabs() {
   docTabs.appendChild(add);
 }
 
+// Repaint the highlight in place. Rebuilding the tab strip here would replace
+// the element mid-gesture, so the second click of a double-click would land on
+// a brand-new node and the browser would never fire `dblclick` — which is why
+// rename appeared not to exist.
+function markActiveDocTab() {
+  for (const el of docTabs.querySelectorAll<HTMLElement>(".doc-tab")) {
+    el.classList.toggle("is-active", el.dataset.id === activeId);
+  }
+}
+
 function switchDoc(id: string) {
+  if (id === activeId) return;
   activeId = id;
   loadActiveIntoEditor();
-  renderDocTabs();
+  markActiveDocTab();
   persistNotes();
   setTimeout(() => ta.focus(), 10);
 }
@@ -158,7 +184,16 @@ function addDoc() {
   loadActiveIntoEditor();
   renderDocTabs();
   persistNotes();
-  setTimeout(() => ta.focus(), 10);
+  // Open the new tab straight into rename so you can name it as you make it;
+  // Enter or Esc drops you into the editor either way.
+  renameActiveDoc();
+}
+
+function renameActiveDoc() {
+  const tab = docTabs.querySelector<HTMLElement>(".doc-tab.is-active");
+  const n = notes.find((x) => x.id === activeId);
+  if (tab && n && !tab.querySelector(".rename")) beginRename(tab, n);
+  else setTimeout(() => ta.focus(), 10);
 }
 
 function deleteDoc(id: string) {
@@ -174,21 +209,29 @@ function deleteDoc(id: string) {
 }
 
 function beginRename(tab: HTMLElement, n: Note) {
-  const nm = tab.querySelector(".nm") as HTMLElement;
+  const nm = tab.querySelector(".nm") as HTMLElement | null;
+  if (!nm) return;
   const input = document.createElement("input");
   input.className = "rename";
+  input.maxLength = 32;
   input.value = n.name;
   nm.replaceWith(input);
   input.focus();
   input.select();
   let done = false;
+  const finish = () => {
+    renderDocTabs();
+    setTimeout(() => ta.focus(), 10);
+  };
   const commit = () => {
     if (done) return;
     done = true;
-    n.name = input.value.trim() || n.name;
+    n.name = input.value.trim().slice(0, 32) || n.name;
     persistNotes();
-    renderDocTabs();
+    finish();
   };
+  // Keep every keystroke inside the field: Esc here means "cancel the rename",
+  // not the global "hide the window".
   input.addEventListener("keydown", (e) => {
     e.stopPropagation();
     if (e.key === "Enter") {
@@ -197,7 +240,7 @@ function beginRename(tab: HTMLElement, n: Note) {
     } else if (e.key === "Escape") {
       e.preventDefault();
       done = true;
-      renderDocTabs();
+      finish();
     }
   });
   input.addEventListener("blur", commit);
@@ -249,6 +292,7 @@ function replayEntrance() {
 
 function showAdd(focus = true) {
   editingRow = null;
+  originalDate = "";
   saveLabel.textContent = "Save";
   editBack.hidden = true;
   entry.reset();
@@ -265,12 +309,22 @@ async function showEditList() {
   setSub(listView);
   rows.innerHTML = "";
   listEmpty.hidden = true;
+  await refreshList();
+}
+
+// `silent` keeps a post-write refresh from stomping on the flash the UI is
+// already showing, or shouting about a hiccup the user can't act on.
+async function refreshList(silent = false) {
   try {
     const res: any = await invoke("fetch_recent", { limit: 25 });
-    if (!res?.ok) return showFlash(res?.error ?? "Could not load rows", "err");
-    renderRows(res.rows as Row[]);
+    if (!res?.ok) {
+      if (!silent) showFlash(res?.error ?? "Could not load rows", "err");
+      return;
+    }
+    lastRows = res.rows as Row[];
+    renderRows(lastRows);
   } catch (e) {
-    showFlash(String(e), "err");
+    if (!silent) showFlash(String(e), "err");
   }
 }
 
@@ -297,52 +351,97 @@ function showEditForm(r: Row) {
   link.value = r.link;
   date.value = r.date || todayISO();
   status.value = r.status || "Applied";
+  originalDate = date.value;
   setSub(entry);
   replayEntrance();
   setTimeout(() => company.focus(), 30);
 }
 
-async function submitEntry(e: Event) {
+type Draft = { row: number | null; company: string; date: string; link: string; status: string };
+
+// Fire-and-forget: the UI has already moved on, so only the failure path is
+// interesting. Hiding the window *is* the success signal.
+function writeInBackground(d: Draft, sentDate: string, onOk?: () => void) {
+  void invoke("submit_entry", {
+    action: d.row === null ? "append" : "update",
+    row: d.row,
+    company: d.company,
+    date: sentDate,
+    link: d.link,
+    status: d.status,
+  })
+    .then((res: any) => {
+      if (!res?.ok) {
+        const err = String(res?.error ?? "Sheet rejected the write");
+        throw new Error(
+          err.toLowerCase() === "unauthorized" ? "token rejected — check the SECRET in Code.gs" : err
+        );
+      }
+      onOk?.();
+    })
+    .catch((err) => recoverFailedWrite(d, err));
+}
+
+// The write lost. Pull the window back up and hand the entry back so Enter
+// retries it — unless the user has since started typing something else, in
+// which case say what failed rather than clobbering their work.
+async function recoverFailedWrite(d: Draft, err: unknown) {
+  const msg = String(err instanceof Error ? err.message : err);
+  showTab("sheet");
+  if (!company.value.trim() && !link.value.trim()) {
+    editingRow = d.row;
+    originalDate = d.row === null ? "" : d.date;
+    saveLabel.textContent = d.row === null ? "Save" : "Update";
+    editBack.hidden = d.row === null;
+    setSeg(d.row === null ? "add" : "edit");
+    company.value = d.company;
+    link.value = d.link;
+    date.value = d.date;
+    status.value = d.status;
+    setSub(entry);
+    showFlash(`couldn't save — ${msg}`, "err");
+    setTimeout(() => company.focus(), 30);
+  } else {
+    showFlash(`couldn't save "${d.company}" — ${msg}`, "err");
+  }
+  try {
+    await appWindow.show();
+    await appWindow.setFocus();
+  } catch {}
+}
+
+function submitEntry(e: Event) {
   e.preventDefault();
   if (!company.value.trim()) {
     showFlash("Company is required", "err");
     company.focus();
     return;
   }
-  const save = $<HTMLButtonElement>("save");
-  save.disabled = true;
-  try {
-    const res: any = await invoke("submit_entry", {
-      action: editingRow ? "update" : "append",
-      row: editingRow,
-      company: company.value.trim(),
-      date: date.value.trim() || todayISO(),
-      link: link.value.trim(),
-      status: status.value,
-    });
-    if (!res?.ok) {
-      const err = String(res?.error ?? "Sheet rejected the write");
-      throw new Error(err.toLowerCase() === "unauthorized" ? "token rejected — check the SECRET in Code.gs" : err);
-    }
-    save.classList.add("ok");
-    if (editingRow) {
-      showFlash("Row updated ✓", "ok");
-      setTimeout(() => {
-        save.classList.remove("ok");
-        showEditList();
-      }, 550);
-    } else {
-      showFlash("Saved to sheet ✓", "ok");
-      setTimeout(async () => {
-        save.classList.remove("ok");
-        showAdd(false);
-        await appWindow.hide();
-      }, 620);
-    }
-  } catch (err) {
-    showFlash(String(err instanceof Error ? err.message : err), "err");
-  } finally {
-    save.disabled = false;
+  const d: Draft = {
+    row: editingRow,
+    company: company.value.trim(),
+    date: date.value.trim() || todayISO(),
+    link: link.value.trim(),
+    status: status.value,
+  };
+  const sentDate = d.row !== null && d.date === originalDate ? "" : d.date;
+
+  if (d.row === null) {
+    // Close first, write after. Waiting on the round trip is what made Enter
+    // feel slow; if the write fails, recoverFailedWrite brings the window back.
+    showAdd(false);
+    void appWindow.hide();
+    writeInBackground(d, sentDate);
+  } else {
+    // Same idea for an edit: patch the cached row and show the list right away,
+    // then reconcile with the sheet once the write lands.
+    const cached = lastRows.find((r) => r.row === d.row);
+    if (cached) Object.assign(cached, { company: d.company, date: d.date, link: d.link, status: d.status });
+    setSeg("edit");
+    setSub(listView);
+    renderRows(lastRows);
+    showFlash("Row updated ✓", "ok");
+    writeInBackground(d, sentDate, () => void refreshList(true));
   }
 }
 
@@ -439,6 +538,12 @@ window.addEventListener("keydown", (e) => {
       return;
     }
   }
+  // F2 renames the open note tab — the same gesture Explorer uses.
+  if (e.key === "F2" && activeTab === "notes") {
+    e.preventDefault();
+    renameActiveDoc();
+    return;
+  }
   if (e.key === "Escape") {
     e.preventDefault();
     persistNotes();
@@ -453,6 +558,10 @@ listen("reset-focus", () => {
 
 // ---- boot ----
 (async () => {
+  // Show the real installed version rather than a number that goes stale.
+  getVersion()
+    .then((v) => ($("app-ver").textContent = `v${v}`))
+    .catch(() => {});
   date.value = todayISO();
   loadNotesStore();
   renderDocTabs();
