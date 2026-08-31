@@ -1,14 +1,14 @@
 [package]
-name = "sheet-shortcut"
-version = "0.2.0"
-description = "Quick-add internship applications to a Google Sheet"
+name = "notepad-plus-plus-plus"
+version = "0.3.0"
+description = "Notepad+++ — a tray notepad with a Google Sheet quick-add"
 authors = ["Matthew Tershi"]
 edition = "2021"
 
 [lib]
 # The `_lib` suffix keeps the lib name unique so it won't conflict with the
 # bin name (a Windows-specific cargo quirk).
-name = "sheet_shortcut_lib"
+name = "notepad_ppp_lib"
 # Desktop-only build: the binary links the lib as an `rlib`. The `cdylib`/
 # `staticlib` types are only needed for mobile, and building the cdylib DLL
 # trips a GNU-ld "export ordinal too large" bug, so we omit them here.

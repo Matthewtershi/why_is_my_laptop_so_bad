@@ -1,5 +1,5 @@
 /**
- * sheet-shortcut — Google Apps Script webhook
+ * Notepad+++ — Google Apps Script webhook
  * ---------------------------------------------------------------------------
  * Bound to your "Internships" spreadsheet. Deploy as a Web App
  * (Execute as: Me, Who has access: Anyone with the link). All requests must
@@ -14,6 +14,10 @@
  *                                    -> { ok, row }
  *   POST {token, action:"update", row, company, date, link, status}
  *                                    -> { ok }
+ *
+ * `date` is optional on update: omit it (or send "") to leave the Date cell
+ * exactly as the sheet has it. Dates are 'yyyy-MM-dd' strings in both
+ * directions, read and written in the SPREADSHEET's timezone.
  */
 
 // 1) Paste a long random string here (also put the SAME value in the app config).
@@ -29,6 +33,15 @@ var FIRST_DATA_ROW = 2; // row 1 is headers
 function sheet_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   return SHEET_NAME ? ss.getSheetByName(SHEET_NAME) : ss.getSheets()[0];
+}
+
+// The SPREADSHEET's timezone, not the script project's. getValues() builds
+// Date objects in the spreadsheet's zone, so formatting them in the script's
+// zone (the two default to different values) shifts the day by one and the
+// app then writes that shifted day back on the next edit.
+function tz_() {
+  return SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone()
+      || Session.getScriptTimeZone();
 }
 
 function json_(obj) {
@@ -107,15 +120,23 @@ function doPost(e) {
 function writeRow_(sh, row, body) {
   // Only overwrite fields that were provided, so a partial edit won't blank others.
   if (body.company !== undefined) sh.getRange(row, COLS.COMPANY).setValue(body.company);
-  if (body.date !== undefined)    sh.getRange(row, COLS.DATE).setValue(body.date);
   if (body.link !== undefined)    sh.getRange(row, COLS.LINK).setValue(body.link);
   if (body.status !== undefined)  sh.getRange(row, COLS.STATUS).setValue(body.status);
+
+  // A missing/blank date means "don't touch the cell" — an edit that only
+  // changed the Status must leave the recorded date exactly as it is.
+  if (body.date === undefined) return;
+  var dateStr = String(body.date).trim();
+  if (!dateStr) return;
+  var cell = sh.getRange(row, COLS.DATE);
+  // Hand Sheets the raw 'yyyy-MM-dd' string and let IT parse the date. Building
+  // a JS Date here would re-encode the day through the script's timezone; a
+  // string is parsed in spreadsheet-land, so the stored day is exactly the one
+  // the app sent, and it round-trips byte-for-byte through formatDate_.
+  cell.setValue(dateStr);
 }
 
 function formatDate_(v) {
-  if (v instanceof Date) {
-    var tz = Session.getScriptTimeZone();
-    return Utilities.formatDate(v, tz, 'yyyy-MM-dd');
-  }
-  return String(v);
+  if (v instanceof Date) return Utilities.formatDate(v, tz_(), 'yyyy-MM-dd');
+  return v == null ? '' : String(v);
 }

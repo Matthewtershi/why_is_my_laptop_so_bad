@@ -1,6 +1,6 @@
 name: release
 
-# Push a version tag (e.g. v0.2.1) to build, sign, and publish a release.
+# Push a version tag (e.g. v0.3.1) to build, sign, and publish a release.
 # The installed app checks the release's latest.json and updates itself.
 on:
   push:
@@ -41,7 +41,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "NotePad+++ ${{ github.ref_name }}"
+          releaseName: "Notepad+++ ${{ github.ref_name }}"
           releaseBody: "The app updates itself automatically. Or download the setup .exe below to install manually."
           releaseDraft: false
           prerelease: false

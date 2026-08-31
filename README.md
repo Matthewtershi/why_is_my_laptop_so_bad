@@ -1,6 +1,7 @@
-# Sheet Shortcut
+# Notepad+++
 
-A tiny Tauri tray app for Windows that adds an internship application to your
+A tiny Tauri tray app for Windows: a scratch notepad plus a one-keystroke
+quick-add for a Google Sheet. It adds an internship application to your
 Google Sheet from anywhere with **Ctrl + Alt + Space** — a small window pops up,
 you type Company + portal link, hit Enter, and it records the row and vanishes.
 You can also edit recent rows.
@@ -18,7 +19,8 @@ Company │ Date Submitted │ Link │ Status
   **Ctrl+Alt+1 / Ctrl+Alt+2** to jump directly (the full shortcut list lives in
   the in-app Settings ⚙):
   - **Notes** — a notepad.exe-style plain-text editor with line numbers and
-    multiple named tabs you can add (`+`), rename (double-click), and close
+    multiple named tabs you can add (`+`), rename (double-click, right-click,
+    or `F2` — a new tab opens straight into its name field), and close
     (`×`). Notes persist in the WebView's `localStorage`, so closing/reopening
     keeps everything.
   - **Sheet** — the internship quick-add (below).
@@ -35,7 +37,11 @@ Ctrl+Alt+Space ▶ Tauri window ▶ Rust command ▶ HTTPS POST ▶ Apps Script 
 ```
 
 - **Add** appends a row. **Edit** pulls your recent rows (via `doGet`) so you
-  can click one and update its Status/etc.
+  can click one and update its Status/etc. An edit that doesn't touch the Date
+  field sends no date at all, so the sheet keeps the day it already recorded.
+- **Enter closes the window immediately** and the write goes out behind it —
+  no waiting on the round trip. If the write fails, the window comes back with
+  your entry still in the form and the error in the flash bar.
 - Date auto-fills to today; Status defaults to `Applied`. The only real typing
   is Company + Link.
 - The window does **not** hide when it loses focus, so you can tab to your
@@ -57,6 +63,9 @@ Settings are stored locally at:
 ```
 %APPDATA%\com.matthewtershi.sheetshortcut\config.json
 ```
+(The bundle identifier still says `sheetshortcut` on purpose — it's what keys
+your settings and saved notes, so renaming the app to Notepad+++ left it alone.
+See [`RELEASING.md`](./RELEASING.md) for the rest of the rename's fallout.)
 
 ---
 
@@ -81,7 +90,7 @@ npm run tauri build    # produces the NSIS installer
 
 The installer lands in:
 ```
-src-tauri/target/release/bundle/nsis/Sheet Shortcut_0.1.0_x64-setup.exe
+src-tauri/target/release/bundle/nsis/Notepad+++_0.3.0_x64-setup.exe
 ```
 Double-click to install. It registers itself to launch on login (so the hotkey
 is always live) and to appear in the system tray.

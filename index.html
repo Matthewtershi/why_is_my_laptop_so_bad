@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <link rel="stylesheet" href="/src/styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>NotePad+++</title>
+    <title>Notepad+++</title>
     <script type="module" src="/src/main.ts" defer></script>
   </head>
 
@@ -29,7 +29,7 @@
       <!-- titlebar (draggable) -->
       <header class="titlebar" data-tauri-drag-region>
         <div class="brand" data-tauri-drag-region>
-          <span class="wordmark" data-tauri-drag-region>NotePad+++</span>
+          <span class="wordmark" data-tauri-drag-region>Notepad+++</span>
           <svg class="squiggle" viewBox="0 0 120 6" aria-hidden="true">
             <path d="M1 4.2 C 20 1.4, 34 5.2, 52 3.1 S 88 1.2, 119 3.6" />
           </svg>
@@ -149,12 +149,13 @@
                 <li><span class="keys"><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>1</kbd></span><span class="sc-desc">go to Notes</span></li>
                 <li><span class="keys"><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>2</kbd></span><span class="sc-desc">go to Sheet</span></li>
                 <li><span class="keys"><kbd>Enter</kbd></span><span class="sc-desc">save entry (on Sheet)</span></li>
+                <li><span class="keys"><kbd>F2</kbd></span><span class="sc-desc">rename the open note tab</span></li>
                 <li><span class="keys"><kbd>Esc</kbd></span><span class="sc-desc">hide to tray</span></li>
               </ul>
-              <div class="sc-note">notes: double-click a tab to rename &middot; <b>+</b> new &middot; <b>&times;</b> close</div>
+              <div class="sc-note">notes: double-click (or right-click / <b>F2</b>) a tab to rename &middot; <b>+</b> new &middot; <b>&times;</b> close</div>
             </div>
             <div class="ver-row">
-              <span class="ver">v0.2.0</span>
+              <span class="ver" id="app-ver">v0.3.0</span>
               <button type="button" id="check-updates" class="linkback">check for updates</button>
             </div>
           </section>
