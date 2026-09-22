@@ -96,6 +96,74 @@ fn save_config(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Talking to Apps Script
+//
+// A web app answers /exec with a 302 pointing at a one-shot
+// script.googleusercontent.com URL that holds the script's output. The script
+// has ALREADY RUN by the time that 302 is issued. That second leg is
+// unreliable in practice: measured on this deployment it 404s in bursts (5 of
+// 12 sequential reads) and can bounce googleusercontent -> script.google.com
+// several times, taking 45s.
+//
+// So the two legs mean different things and must not share an error path:
+//   POST fails outright  -> the script never ran   -> the write did NOT happen
+//   302 received         -> the script ran         -> the write DID happen
+// Reporting a failed receipt-read as a failed write is what made the app cry
+// wolf on rows that were already in the sheet.
+// ---------------------------------------------------------------------------
+
+/// Redirect hops to walk before giving up. Apps Script normally uses one, but
+/// its re-route dance has been observed bouncing seven times.
+const MAX_HOPS: usize = 10;
+
+/// Redirects are followed by hand (see above), so the POST can tell "the script
+/// ran" from "the script never ran". Timeouts are per-request, not global: the
+/// POST must be given room to finish, while a receipt read should give up early
+/// and let the retry take a fresh URL.
+fn http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("HTTP client error: {e}"))
+}
+
+/// A healthy read answers in a few seconds; the pathological ones sit in the
+/// googleusercontent bounce for 30-45s and usually 404 anyway. Cutting them off
+/// early and retrying is both faster and likelier to succeed.
+const READ_TIMEOUT: u64 = 18;
+
+/// GET `url`, walking any redirect chain, and parse the JSON at the end.
+async fn read_json(client: &reqwest::Client, url: &str) -> Result<serde_json::Value, String> {
+    let mut next = url.to_string();
+    for _ in 0..MAX_HOPS {
+        let resp = client
+            .get(&next)
+            .timeout(std::time::Duration::from_secs(READ_TIMEOUT))
+            .send()
+            .await
+            .map_err(|e| format!("network error: {e}"))?;
+        if let Some(loc) = resp.headers().get(reqwest::header::LOCATION) {
+            let loc = loc.to_str().map_err(|e| format!("bad redirect: {e}"))?;
+            // Join against the current URL so a relative Location still works.
+            next = reqwest::Url::parse(&next)
+                .and_then(|base| base.join(loc))
+                .map(|u| u.to_string())
+                .map_err(|e| format!("bad redirect target: {e}"))?;
+            continue;
+        }
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(format!("HTTP {status}"));
+        }
+        return resp
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|e| format!("bad response: {e}"));
+    }
+    Err("too many redirects".into())
+}
+
 /// Append a new row or update an existing one via the Apps Script web app.
 #[tauri::command]
 async fn submit_entry(
@@ -127,16 +195,62 @@ async fn submit_entry(
     if let Some(r) = row {
         body["row"] = serde_json::json!(r);
     }
-    let client = reqwest::Client::new();
+
+    let client = http_client()?;
+    // The POST is the only non-idempotent step, so it is sent exactly once and
+    // never retried — a retry here is how you get duplicate rows. It also gets
+    // a generous timeout: giving up early would not stop the sheet from being
+    // written, it would only leave us unable to tell that it was.
     let resp = client
         .post(&cfg.webhook_url)
+        .timeout(std::time::Duration::from_secs(90))
         .json(&body)
         .send()
         .await
         .map_err(|e| format!("Network error: {e}"))?;
-    resp.json::<serde_json::Value>()
-        .await
-        .map_err(|e| format!("Bad response from sheet: {e}"))
+
+    let status = resp.status();
+    if !status.is_redirection() {
+        if !status.is_success() {
+            return Err(format!("Sheet returned HTTP {status}"));
+        }
+        // Some deployments answer inline with no redirect.
+        return resp
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|e| format!("Bad response from sheet: {e}"));
+    }
+
+    // Past this point the script has run and the row is written. Try to read
+    // the receipt so a real script-level rejection (unauthorized, bad row) can
+    // still surface, but never turn a failed read into a failed write.
+    let receipt = resp
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|loc| {
+            reqwest::Url::parse(&cfg.webhook_url)
+                .and_then(|base| base.join(loc))
+                .ok()
+        })
+        .map(|u| u.to_string());
+
+    if let Some(url) = receipt {
+        for attempt in 0..3u64 {
+            match read_json(&client, &url).await {
+                Ok(v) => return Ok(v),
+                Err(_) if attempt < 2 => {
+                    // The 404s arrive in bursts, so pause before re-reading.
+                    tokio::time::sleep(std::time::Duration::from_millis(700 * (attempt + 1))).await;
+                }
+                Err(_) => break,
+            }
+        }
+    }
+
+    // The write landed but the receipt is unreadable. Say so honestly rather
+    // than claiming the save failed.
+    Ok(serde_json::json!({ "ok": true, "unverified": true }))
 }
 
 /// Fetch the most recent rows so the UI can offer them for editing.
@@ -149,17 +263,28 @@ async fn fetch_recent(
     if cfg.webhook_url.is_empty() {
         return Err("No webhook configured — open Settings (gear) first.".into());
     }
-    let limit_s = limit.unwrap_or(25).to_string();
-    let client = reqwest::Client::new();
-    let resp = client
-        .get(&cfg.webhook_url)
-        .query(&[("token", cfg.token.as_str()), ("limit", limit_s.as_str())])
-        .send()
-        .await
-        .map_err(|e| format!("Network error: {e}"))?;
-    resp.json::<serde_json::Value>()
-        .await
-        .map_err(|e| format!("Bad response from sheet: {e}"))
+    let mut url = reqwest::Url::parse(&cfg.webhook_url).map_err(|e| format!("Bad webhook URL: {e}"))?;
+    url.query_pairs_mut()
+        .append_pair("token", &cfg.token)
+        .append_pair("limit", &limit.unwrap_or(25).to_string());
+    let url = url.to_string();
+
+    let client = http_client()?;
+    // A read changes nothing, so the whole request can simply be retried until
+    // Apps Script serves a result instead of a 404.
+    let mut last = String::new();
+    for attempt in 0..4u64 {
+        match read_json(&client, &url).await {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                last = e;
+                if attempt < 3 {
+                    tokio::time::sleep(std::time::Duration::from_millis(700 * (attempt + 1))).await;
+                }
+            }
+        }
+    }
+    Err(format!("Could not reach the sheet after 4 tries — {last}"))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

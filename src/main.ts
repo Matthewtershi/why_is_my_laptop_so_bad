@@ -308,7 +308,10 @@ async function showEditList() {
   setSeg("edit");
   setSub(listView);
   rows.innerHTML = "";
-  listEmpty.hidden = true;
+  // Apps Script routinely takes 2-13s to answer, so say something rather than
+  // leaving an empty panel that looks broken.
+  listEmpty.textContent = "loading…";
+  listEmpty.hidden = false;
   await refreshList();
 }
 
@@ -318,18 +321,27 @@ async function refreshList(silent = false) {
   try {
     const res: any = await invoke("fetch_recent", { limit: 25 });
     if (!res?.ok) {
-      if (!silent) showFlash(res?.error ?? "Could not load rows", "err");
+      if (!silent) {
+        showFlash(res?.error ?? "Could not load rows", "err");
+        listEmpty.textContent = "couldn't load — hit refresh";
+        listEmpty.hidden = false;
+      }
       return;
     }
     lastRows = res.rows as Row[];
     renderRows(lastRows);
   } catch (e) {
-    if (!silent) showFlash(String(e), "err");
+    if (!silent) {
+      showFlash(String(e), "err");
+      listEmpty.textContent = "couldn't load — hit refresh";
+      listEmpty.hidden = false;
+    }
   }
 }
 
 function renderRows(list: Row[]) {
   rows.innerHTML = "";
+  listEmpty.textContent = "nothing here yet —";
   listEmpty.hidden = list.length > 0;
   for (const r of list) {
     const li = document.createElement("li");
@@ -377,6 +389,10 @@ function writeInBackground(d: Draft, sentDate: string, onOk?: () => void) {
           err.toLowerCase() === "unauthorized" ? "token rejected — check the SECRET in Code.gs" : err
         );
       }
+      // The row is in the sheet but Apps Script never served the receipt (its
+      // result URL 404s in bursts). That is not a failed write, so it must not
+      // drag the window back up — just say so if anyone is looking.
+      if (res.unverified) showFlash("saved — sheet didn't send a receipt", "");
       onOk?.();
     })
     .catch((err) => recoverFailedWrite(d, err));
@@ -459,8 +475,15 @@ async function checkForUpdates(manual = false) {
     } else if (manual) {
       showFlash("you're on the latest version ✓", "ok");
     }
-  } catch {
-    if (manual) showFlash("update check failed — try again later", "err");
+  } catch (e) {
+    if (!manual) return;
+    // Say what actually went wrong. "try again later" sent us hunting through
+    // the app when the real answer was a 404: no release published yet.
+    const msg = String(e instanceof Error ? e.message : e);
+    showFlash(
+      /404|not found/i.test(msg) ? "no release published yet — nothing to update to" : `update check failed — ${msg}`,
+      "err"
+    );
   }
 }
 

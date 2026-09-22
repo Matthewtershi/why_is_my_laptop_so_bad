@@ -1,6 +1,6 @@
 [package]
 name = "notepad-plus-plus-plus"
-version = "0.3.0"
+version = "0.3.1"
 description = "Notepad+++ — a tray notepad with a Google Sheet quick-add"
 authors = ["Matthew Tershi"]
 edition = "2021"
@@ -29,6 +29,9 @@ serde_json = "1"
 # native-tls => SChannel on Windows: no OpenSSL, no C compiler needed on the
 # GNU toolchain. Only http1 + json to keep the build lean.
 reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
+# Only for the backoff between receipt-read retries; tokio is already in the
+# tree via tauri, so this adds nothing to the build.
+tokio = { version = "1", default-features = false, features = ["time"] }
 
 [profile.release]
 # Smaller, faster-to-ship binary for a tiny tray app.
