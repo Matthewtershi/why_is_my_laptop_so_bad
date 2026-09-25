@@ -111,6 +111,16 @@ fn save_config(
 //   302 received         -> the script ran         -> the write DID happen
 // Reporting a failed receipt-read as a failed write is what made the app cry
 // wolf on rows that were already in the sheet.
+//
+// Worse, the receipt chain sometimes redirects BACK to /exec:
+//   POST /exec              -> 302 googleusercontent   (doPost ran, row written)
+//   GET  googleusercontent  -> 302 script.google.com/.../exec   <-- no query!
+//   GET  /exec              -> runs doGet with NO token -> {"ok":false,
+//                              "error":"unauthorized"} -> 302 googleusercontent
+//   GET  googleusercontent  -> we read THAT and believe the write was rejected
+// The receipt then looks perfectly readable while describing a completely
+// different request, so the app announced "token rejected" on a row it had
+// just written. Never follow a redirect that re-invokes the script.
 // ---------------------------------------------------------------------------
 
 /// Redirect hops to walk before giving up. Apps Script normally uses one, but
@@ -128,13 +138,28 @@ fn http_client() -> Result<reqwest::Client, String> {
         .map_err(|e| format!("HTTP client error: {e}"))
 }
 
+/// Apps Script serves a script's stored output from googleusercontent. A hop to
+/// anywhere else mid-chain means we are being sent back to run the script again
+/// rather than to collect its output.
+fn serves_stored_output(u: &reqwest::Url) -> bool {
+    u.host_str()
+        .is_some_and(|h| h == "googleusercontent.com" || h.ends_with(".googleusercontent.com"))
+}
+
 /// A healthy read answers in a few seconds; the pathological ones sit in the
 /// googleusercontent bounce for 30-45s and usually 404 anyway. Cutting them off
 /// early and retrying is both faster and likelier to succeed.
 const READ_TIMEOUT: u64 = 18;
 
 /// GET `url`, walking any redirect chain, and parse the JSON at the end.
-async fn read_json(client: &reqwest::Client, url: &str) -> Result<serde_json::Value, String> {
+///
+/// `receipt` marks a chain that is collecting a POST's stored output, which is
+/// confined to googleusercontent so it can never wander back into the script.
+async fn read_json(
+    client: &reqwest::Client,
+    url: &str,
+    receipt: bool,
+) -> Result<serde_json::Value, String> {
     let mut next = url.to_string();
     for _ in 0..MAX_HOPS {
         let resp = client
@@ -146,10 +171,22 @@ async fn read_json(client: &reqwest::Client, url: &str) -> Result<serde_json::Va
         if let Some(loc) = resp.headers().get(reqwest::header::LOCATION) {
             let loc = loc.to_str().map_err(|e| format!("bad redirect: {e}"))?;
             // Join against the current URL so a relative Location still works.
-            next = reqwest::Url::parse(&next)
+            let target = reqwest::Url::parse(&next)
                 .and_then(|base| base.join(loc))
-                .map(|u| u.to_string())
                 .map_err(|e| format!("bad redirect target: {e}"))?;
+            // Refuse to be sent back into the script. Following this would run
+            // doGet with no token and return someone else's answer, which the
+            // caller cannot tell apart from its own.
+            if target.path().ends_with("/exec") {
+                return Err("redirected back to the script instead of its output".into());
+            }
+            if receipt && !serves_stored_output(&target) {
+                return Err(format!(
+                    "receipt redirected to {}, which does not serve script output",
+                    target.host_str().unwrap_or("?")
+                ));
+            }
+            next = target.to_string();
             continue;
         }
         let status = resp.status();
@@ -237,7 +274,7 @@ async fn submit_entry(
 
     if let Some(url) = receipt {
         for attempt in 0..3u64 {
-            match read_json(&client, &url).await {
+            match read_json(&client, &url, true).await {
                 Ok(v) => return Ok(v),
                 Err(_) if attempt < 2 => {
                     // The 404s arrive in bursts, so pause before re-reading.
@@ -274,7 +311,7 @@ async fn fetch_recent(
     // Apps Script serves a result instead of a 404.
     let mut last = String::new();
     for attempt in 0..4u64 {
-        match read_json(&client, &url).await {
+        match read_json(&client, &url, false).await {
             Ok(v) => return Ok(v),
             Err(e) => {
                 last = e;

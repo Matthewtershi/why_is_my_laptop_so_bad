@@ -1,6 +1,6 @@
 [package]
 name = "notepad-plus-plus-plus"
-version = "0.3.1"
+version = "0.3.2"
 description = "Notepad+++ — a tray notepad with a Google Sheet quick-add"
 authors = ["Matthew Tershi"]
 edition = "2021"
@@ -40,3 +40,8 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
+
+[dev-dependencies]
+# Only for `cargo run --example probe` (a diagnostic harness that exercises the
+# exact reqwest/SChannel setup the app uses). Not in the shipped binary.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
