@@ -1,26 +1,33 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { LogicalSize } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 
 const appWindow = getCurrentWindow();
 
-type Config = { webhook_url: string; token: string };
+type Config = { webhook_url: string; token: string; dailys_dir: string };
 type Row = { row: number; company: string; date: string; link: string; status: string };
-type Tab = "notes" | "sheet" | "settings";
+type Tab = "notes" | "sheet" | "dailys" | "settings";
 type Note = { id: string; name: string; body: string };
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 // ---- element handles ----
-const views = [$("notes"), $("sheet"), $("settings")];
+const views = [$("notes"), $("sheet"), $("dailys"), $("settings")];
 const tabs = Array.from(document.querySelectorAll<HTMLElement>(".tab"));
 
 const docTabs = $("doc-tabs");
 const gutter = $("gutter");
 const ta = $<HTMLTextAreaElement>("ta");
+
+const topicTabs = $("topic-tabs");
+const logEl = $("log");
+const dailyTa = $<HTMLTextAreaElement>("daily-ta");
+const dailySrc = $<HTMLInputElement>("daily-src");
+const dailyWc = $("daily-wc");
 
 const seg = $("seg");
 const entry = $<HTMLFormElement>("entry");
@@ -35,6 +42,7 @@ const rows = $("rows");
 const listEmpty = $("list-empty");
 const webhook = $<HTMLInputElement>("webhook");
 const token = $<HTMLInputElement>("token");
+const dailysDirInput = $<HTMLInputElement>("dailys-dir");
 const flash = $("flash");
 
 let activeTab: Tab = "notes";
@@ -140,12 +148,12 @@ function renderDocTabs() {
     tab.addEventListener("click", () => switchDoc(n.id));
     tab.addEventListener("dblclick", (e) => {
       e.preventDefault();
-      beginRename(tab, n);
+      renameNote(tab, n);
     });
     // Right-click renames too — double-click isn't discoverable on its own.
     tab.addEventListener("contextmenu", (e) => {
       e.preventDefault();
-      beginRename(tab, n);
+      renameNote(tab, n);
     });
     docTabs.appendChild(tab);
   }
@@ -192,7 +200,7 @@ function addDoc() {
 function renameActiveDoc() {
   const tab = docTabs.querySelector<HTMLElement>(".doc-tab.is-active");
   const n = notes.find((x) => x.id === activeId);
-  if (tab && n && !tab.querySelector(".rename")) beginRename(tab, n);
+  if (tab && n && !tab.querySelector(".rename")) renameNote(tab, n);
   else setTimeout(() => ta.focus(), 10);
 }
 
@@ -208,27 +216,47 @@ function deleteDoc(id: string) {
   setTimeout(() => ta.focus(), 10);
 }
 
-function beginRename(tab: HTMLElement, n: Note) {
+function renameNote(tab: HTMLElement, n: Note) {
+  beginRename(
+    tab,
+    n.name,
+    32,
+    (name) => {
+      n.name = name;
+      persistNotes();
+    },
+    () => {
+      renderDocTabs();
+      setTimeout(() => ta.focus(), 10);
+    }
+  );
+}
+
+// Swap a tab's label for an inline name field. Shared by note tabs and Dailys
+// topics; `onCommit` only runs for a non-empty name, and `finish` runs once
+// either way (after onCommit settles, so a slow rename repaints the result).
+function beginRename(
+  tab: HTMLElement,
+  current: string,
+  maxLength: number,
+  onCommit: (name: string) => void | Promise<void>,
+  finish: () => void
+) {
   const nm = tab.querySelector(".nm") as HTMLElement | null;
   if (!nm) return;
   const input = document.createElement("input");
   input.className = "rename";
-  input.maxLength = 32;
-  input.value = n.name;
+  input.maxLength = maxLength;
+  input.value = current;
   nm.replaceWith(input);
   input.focus();
   input.select();
   let done = false;
-  const finish = () => {
-    renderDocTabs();
-    setTimeout(() => ta.focus(), 10);
-  };
   const commit = () => {
     if (done) return;
     done = true;
-    n.name = input.value.trim().slice(0, 32) || n.name;
-    persistNotes();
-    finish();
+    const name = input.value.trim().slice(0, maxLength);
+    void Promise.resolve(name ? onCommit(name) : undefined).finally(finish);
   };
   // Keep every keystroke inside the field: Esc here means "cancel the rename",
   // not the global "hide the window".
@@ -259,7 +287,297 @@ ta.addEventListener("scroll", () => {
 ta.addEventListener("blur", persistNotes);
 
 // =====================================================================
-//  tabs (Notes / Sheet / Settings)
+//  DAILYS — one append-only Markdown log per topic, on disk
+//  The files are the source of truth (Rust reads/writes them); only the
+//  unsent draft and the open topic live in localStorage.
+// =====================================================================
+const LS_TOPIC = "np3.dailys.topic";
+const LS_DRAFTS = "np3.dailys.drafts";
+type DailyDraft = { text: string; src: string };
+let topics: string[] = [];
+let activeTopic = "";
+let drafts: Record<string, DailyDraft> = {};
+let draftsTimer: number | undefined;
+let logging = false;
+
+function loadDrafts() {
+  try {
+    drafts = JSON.parse(localStorage.getItem(LS_DRAFTS) || "{}") || {};
+  } catch {
+    drafts = {};
+  }
+}
+function persistDrafts() {
+  clearTimeout(draftsTimer);
+  localStorage.setItem(LS_DRAFTS, JSON.stringify(drafts));
+  localStorage.setItem(LS_TOPIC, activeTopic);
+}
+
+const countWords = (s: string) => (s.match(/\S+/g) || []).length;
+function updateWordCount() {
+  const n = countWords(dailyTa.value);
+  dailyWc.textContent = `${n} word${n === 1 ? "" : "s"}`;
+}
+
+async function loadTopics() {
+  try {
+    const res = await invoke<{ dir: string; topics: string[] }>("dailys_list");
+    topics = res.topics;
+  } catch (e) {
+    showFlash(String(e), "err");
+    topics = [];
+  }
+  const want = (activeTopic || localStorage.getItem(LS_TOPIC) || "").toLowerCase();
+  activeTopic = topics.find((t) => t.toLowerCase() === want) ?? topics[0] ?? "";
+  renderTopicTabs();
+  await loadActiveTopic();
+}
+
+function renderTopicTabs() {
+  topicTabs.innerHTML = "";
+  for (const t of topics) {
+    const tab = document.createElement("div");
+    tab.className = "doc-tab" + (t === activeTopic ? " is-active" : "");
+    tab.dataset.id = t;
+    tab.title = `${t} — double-click (or F2) to rename`;
+    const nm = document.createElement("span");
+    nm.className = "nm";
+    nm.textContent = t;
+    tab.appendChild(nm);
+    // No close button on purpose: a topic is a diary file. Deleting one is
+    // done in the folder, where it goes to the Recycle Bin.
+    tab.addEventListener("click", () => switchTopic(t));
+    tab.addEventListener("dblclick", (e) => {
+      e.preventDefault();
+      renameTopic(tab, t);
+    });
+    tab.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      renameTopic(tab, t);
+    });
+    topicTabs.appendChild(tab);
+  }
+  const add = document.createElement("button");
+  add.className = "doc-add";
+  add.type = "button";
+  add.textContent = "+";
+  add.title = "new topic";
+  add.addEventListener("click", addTopic);
+  topicTabs.appendChild(add);
+}
+
+function switchTopic(t: string) {
+  if (t === activeTopic) return;
+  activeTopic = t;
+  for (const el of topicTabs.querySelectorAll<HTMLElement>(".doc-tab")) {
+    el.classList.toggle("is-active", el.dataset.id === t);
+  }
+  persistDrafts();
+  void loadActiveTopic();
+  setTimeout(() => dailyTa.focus(), 10);
+}
+
+async function addTopic() {
+  const taken = new Set(topics.map((t) => t.toLowerCase()));
+  let i = topics.length + 1;
+  while (taken.has(`topic ${i}`)) i++;
+  try {
+    const name = await invoke<string>("dailys_create", { topic: `Topic ${i}` });
+    topics.push(name);
+    activeTopic = name;
+    persistDrafts();
+    renderTopicTabs();
+    await loadActiveTopic();
+    renameActiveTopic();
+  } catch (e) {
+    showFlash(String(e), "err");
+  }
+}
+
+function renameActiveTopic() {
+  const tab = topicTabs.querySelector<HTMLElement>(".doc-tab.is-active");
+  if (tab && activeTopic && !tab.querySelector(".rename")) renameTopic(tab, activeTopic);
+  else setTimeout(() => dailyTa.focus(), 10);
+}
+
+function renameTopic(tab: HTMLElement, from: string) {
+  beginRename(
+    tab,
+    from,
+    60,
+    async (to) => {
+      if (to === from) return;
+      try {
+        const name = await invoke<string>("dailys_rename", { from, to });
+        topics = topics.map((t) => (t === from ? name : t));
+        if (drafts[from]) {
+          drafts[name] = drafts[from];
+          delete drafts[from];
+        }
+        if (activeTopic === from) activeTopic = name;
+        persistDrafts();
+      } catch (e) {
+        showFlash(String(e), "err");
+      }
+    },
+    () => {
+      renderTopicTabs();
+      setTimeout(() => dailyTa.focus(), 10);
+    }
+  );
+}
+
+async function loadActiveTopic() {
+  const topic = activeTopic;
+  const d = drafts[topic] ?? { text: "", src: "" };
+  dailyTa.value = d.text;
+  dailySrc.value = d.src;
+  updateWordCount();
+  if (!topic) return renderLog("");
+  try {
+    const md = await invoke<string>("dailys_read", { topic });
+    if (topic === activeTopic) renderLog(md);
+  } catch (e) {
+    showFlash(String(e), "err");
+  }
+}
+
+// A line of the user's own text that starts with "## " would read back as a
+// new entry, so it is escaped on the way in and unescaped for display.
+const escapeHeadings = (s: string) => s.replace(/^(#{1,6} )/gm, "\\$1");
+const unescapeHeadings = (s: string) => s.replace(/^\\(#{1,6} )/gm, "$1");
+
+function parseEntries(md: string) {
+  return md
+    .split(/^## /m)
+    .slice(1)
+    .map((part) => {
+      const nl = part.indexOf("\n");
+      return {
+        head: (nl < 0 ? part : part.slice(0, nl)).trim(),
+        body: unescapeHeadings(nl < 0 ? "" : part.slice(nl + 1).trim()),
+      };
+    });
+}
+
+// Text with every http(s) link turned into something clickable. Built from
+// nodes, not innerHTML, since the file may have been edited by hand.
+function appendLinkified(el: HTMLElement, text: string) {
+  const re = /https?:\/\/[^\s<>"']+/g;
+  let last = 0;
+  for (const m of text.matchAll(re)) {
+    // Sentence punctuation right after a link is almost never part of it.
+    const url = m[0].replace(/[.,;:!?)\]]+$/, "");
+    const at = m.index ?? 0;
+    el.append(text.slice(last, at));
+    const a = document.createElement("a");
+    a.textContent = url;
+    a.title = url;
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      invoke("open_link", { url }).catch((err) => showFlash(String(err), "err"));
+    });
+    el.append(a);
+    last = at + url.length;
+  }
+  el.append(text.slice(last));
+}
+
+function renderLog(md: string) {
+  logEl.innerHTML = "";
+  const entries = parseEntries(md);
+  if (entries.length === 0) {
+    const p = document.createElement("p");
+    p.className = "empty";
+    p.textContent = activeTopic
+      ? "no entries yet — write below, Ctrl+Enter to log"
+      : "no topics yet — + to start one, or just write (it goes in Journal)";
+    logEl.appendChild(p);
+    return;
+  }
+  for (const en of entries) {
+    const div = document.createElement("div");
+    div.className = "entry";
+    const hd = document.createElement("div");
+    hd.className = "entry-hd";
+    hd.textContent = en.head;
+    const body = document.createElement("div");
+    body.className = "entry-body";
+    appendLinkified(body, en.body);
+    div.append(hd, body);
+    logEl.appendChild(div);
+  }
+  // Newest is at the bottom, right above where you write the next one.
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function formatEntry(text: string, srcRaw: string) {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  const weekday = d.toLocaleDateString("en-US", { weekday: "short" });
+  let out = `## ${todayISO()} (${weekday}) ${p(d.getHours())}:${p(d.getMinutes())}\n\n${escapeHeadings(text)}\n`;
+  const srcs = srcRaw.split(/[\s,]+/).filter(Boolean);
+  if (srcs.length) out += `\nSources:\n${srcs.map((s) => `- ${s}`).join("\n")}\n`;
+  return out;
+}
+
+async function logEntry() {
+  if (logging) return;
+  const text = dailyTa.value.replace(/^\s*\n/, "").trimEnd();
+  const src = dailySrc.value.trim();
+  if (!text.trim()) {
+    showFlash("write something first", "err");
+    dailyTa.focus();
+    return;
+  }
+  logging = true;
+  const draftKey = activeTopic;
+  try {
+    let topic = activeTopic;
+    if (!topic) {
+      topic = await invoke<string>("dailys_create", { topic: "Journal" });
+      topics = [...topics, topic];
+      activeTopic = topic;
+      renderTopicTabs();
+    }
+    await invoke("dailys_append", { topic, text: formatEntry(text, src) });
+    // Only clear the draft once it is safely on disk; a failure keeps it.
+    delete drafts[draftKey];
+    delete drafts[topic];
+    persistDrafts();
+    const words = countWords(text);
+    showFlash(`logged ✓ — ${words} word${words === 1 ? "" : "s"}`, "ok");
+    if (topic === activeTopic) await loadActiveTopic();
+  } catch (e) {
+    showFlash(`couldn't log — ${e}`, "err");
+  } finally {
+    logging = false;
+    dailyTa.focus();
+  }
+}
+
+function saveDraftSoon() {
+  drafts[activeTopic] = { text: dailyTa.value, src: dailySrc.value };
+  clearTimeout(draftsTimer);
+  draftsTimer = window.setTimeout(persistDrafts, 250);
+}
+
+dailyTa.addEventListener("input", () => {
+  updateWordCount();
+  saveDraftSoon();
+});
+dailySrc.addEventListener("input", saveDraftSoon);
+dailyTa.addEventListener("blur", persistDrafts);
+dailySrc.addEventListener("blur", persistDrafts);
+dailySrc.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.ctrlKey) {
+    e.preventDefault();
+    void logEntry();
+  }
+});
+
+// =====================================================================
+//  tabs (Notes / Sheet / Dailys / Settings)
 // =====================================================================
 function showTab(name: Tab) {
   activeTab = name;
@@ -270,6 +588,10 @@ function showTab(name: Tab) {
   } else if (name === "sheet") {
     if (!entry.classList.contains("is-active") && !listView.classList.contains("is-active")) showAdd(false);
     if (entry.classList.contains("is-active")) setTimeout(() => company.focus(), 30);
+  } else if (name === "dailys") {
+    // Re-list every time so topics added or renamed in Explorer show up.
+    void loadTopics();
+    setTimeout(() => dailyTa.focus(), 20);
   } else {
     void loadSettings();
   }
@@ -494,10 +816,17 @@ async function loadSettings() {
   const cfg = (await invoke("get_config")) as Config;
   webhook.value = cfg.webhook_url;
   token.value = cfg.token;
+  dailysDirInput.value = cfg.dailys_dir;
 }
+
+const configArgs = () => ({
+  webhookUrl: webhook.value.trim(),
+  token: token.value.trim(),
+  dailysDir: dailysDirInput.value.trim(),
+});
 async function saveSettings() {
   try {
-    await invoke("save_config", { webhookUrl: webhook.value.trim(), token: token.value.trim() });
+    await invoke("save_config", configArgs());
     showFlash("Settings saved ✓", "ok");
     showTab("sheet");
   } catch (e) {
@@ -510,7 +839,7 @@ async function saveSettings() {
 async function testConnection() {
   if (!webhook.value.trim()) return showFlash("Enter the web-app URL first", "err");
   try {
-    await invoke("save_config", { webhookUrl: webhook.value.trim(), token: token.value.trim() });
+    await invoke("save_config", configArgs());
   } catch {}
   showFlash("testing…", "");
   try {
@@ -539,14 +868,67 @@ $("test-conn").addEventListener("click", testConnection);
 $("check-updates").addEventListener("click", () => checkForUpdates(true));
 $("btn-close").addEventListener("click", () => {
   persistNotes();
+  persistDrafts();
   appWindow.hide();
+});
+$("daily-log").addEventListener("click", () => void logEntry());
+$("daily-folder").addEventListener("click", () =>
+  invoke("dailys_open_folder").catch((e) => showFlash(String(e), "err"))
+);
+
+// =====================================================================
+//  window size — resizable from any edge or the corner grip, remembered
+// =====================================================================
+const LS_SIZE = "np3.size";
+const DEFAULT_SIZE = { w: 440, h: 396 };
+const MIN_SIZE = 380; // matches minWidth/minHeight in tauri.conf.json
+let sizeTimer: number | undefined;
+let lastGripDown = 0;
+
+async function restoreSize() {
+  try {
+    const s = JSON.parse(localStorage.getItem(LS_SIZE) || "null");
+    if (s && s.w >= MIN_SIZE && s.h >= MIN_SIZE) await appWindow.setSize(new LogicalSize(s.w, s.h));
+  } catch {}
+}
+
+void appWindow.onResized(({ payload }) => {
+  clearTimeout(sizeTimer);
+  sizeTimer = window.setTimeout(async () => {
+    const l = payload.toLogical(await appWindow.scaleFactor());
+    // Minimizing reports a tiny size; don't remember that.
+    if (l.width < MIN_SIZE || l.height < MIN_SIZE) return;
+    localStorage.setItem(LS_SIZE, JSON.stringify({ w: Math.round(l.width), h: Math.round(l.height) }));
+  }, 300);
+});
+
+// The native resize loop swallows the mouseup, so `dblclick` never fires on
+// the grip; spot the second press ourselves instead.
+$("grip").addEventListener("mousedown", (e) => {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  const now = Date.now();
+  if (now - lastGripDown < 400) {
+    lastGripDown = 0;
+    localStorage.removeItem(LS_SIZE);
+    void appWindow.setSize(new LogicalSize(DEFAULT_SIZE.w, DEFAULT_SIZE.h));
+    return;
+  }
+  lastGripDown = now;
+  void appWindow.startResizeDragging("SouthEast");
 });
 
 window.addEventListener("keydown", (e) => {
-  // Ctrl+Tab toggles between the two main sections
+  // Ctrl+Tab cycles the three main sections
   if (e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && e.key === "Tab") {
     e.preventDefault();
-    showTab(activeTab === "notes" ? "sheet" : "notes");
+    const order: Tab[] = ["notes", "sheet", "dailys"];
+    showTab(order[(order.indexOf(activeTab) + 1) % order.length]);
+    return;
+  }
+  if (e.ctrlKey && e.key === "Enter" && activeTab === "dailys") {
+    e.preventDefault();
+    void logEntry();
     return;
   }
   if (e.ctrlKey && e.altKey && !e.shiftKey && !e.metaKey) {
@@ -560,16 +942,23 @@ window.addEventListener("keydown", (e) => {
       showTab("sheet");
       return;
     }
+    if (e.code === "Digit3") {
+      e.preventDefault();
+      showTab("dailys");
+      return;
+    }
   }
-  // F2 renames the open note tab — the same gesture Explorer uses.
-  if (e.key === "F2" && activeTab === "notes") {
+  // F2 renames the open note tab / topic — the same gesture Explorer uses.
+  if (e.key === "F2" && (activeTab === "notes" || activeTab === "dailys")) {
     e.preventDefault();
-    renameActiveDoc();
+    if (activeTab === "notes") renameActiveDoc();
+    else renameActiveTopic();
     return;
   }
   if (e.key === "Escape") {
     e.preventDefault();
     persistNotes();
+    persistDrafts();
     appWindow.hide();
   }
 });
@@ -577,6 +966,7 @@ window.addEventListener("keydown", (e) => {
 listen("reset-focus", () => {
   if (activeTab === "notes") setTimeout(() => ta.focus(), 20);
   else if (activeTab === "sheet" && entry.classList.contains("is-active")) setTimeout(() => company.focus(), 20);
+  else if (activeTab === "dailys") setTimeout(() => dailyTa.focus(), 20);
 });
 
 // ---- boot ----
@@ -585,7 +975,9 @@ listen("reset-focus", () => {
   getVersion()
     .then((v) => ($("app-ver").textContent = `v${v}`))
     .catch(() => {});
+  void restoreSize();
   date.value = todayISO();
+  loadDrafts();
   loadNotesStore();
   renderDocTabs();
   loadActiveIntoEditor();

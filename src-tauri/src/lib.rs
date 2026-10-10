@@ -9,9 +9,12 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 /// Persisted, local-only settings. The token gates access to your Apps Script
 /// web app; it never leaves this machine except in requests to your own sheet.
 #[derive(Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
 struct Config {
     webhook_url: String,
     token: String,
+    /// Where Dailys live. Empty means the default under Documents.
+    dailys_dir: String,
 }
 
 fn config_path(app: &AppHandle) -> tauri::Result<PathBuf> {
@@ -84,8 +87,9 @@ fn save_config(
     state: State<'_, Mutex<Config>>,
     webhook_url: String,
     token: String,
+    dailys_dir: String,
 ) -> Result<(), String> {
-    let cfg = Config { webhook_url, token };
+    let cfg = Config { webhook_url, token, dailys_dir };
     let path = config_path(&app).map_err(|e| e.to_string())?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -324,6 +328,200 @@ async fn fetch_recent(
     Err(format!("Could not reach the sheet after 4 tries — {last}"))
 }
 
+// ---------------------------------------------------------------------------
+// Dailys
+//
+// One Markdown file per topic, appended to and never rewritten, so a diary
+// entry can't be lost to a bad save. Plain files on purpose: they open in any
+// editor, survive the app, and sync for free if the folder sits inside Google
+// Drive / OneDrive.
+// ---------------------------------------------------------------------------
+
+fn dailys_dir(app: &AppHandle, state: &State<'_, Mutex<Config>>) -> Result<PathBuf, String> {
+    let custom = state.lock().unwrap().dailys_dir.trim().to_string();
+    if !custom.is_empty() {
+        let p = PathBuf::from(custom);
+        if !p.is_absolute() {
+            return Err("Dailys folder must be a full path (e.g. C:\\Users\\you\\Dailys)".into());
+        }
+        return Ok(p);
+    }
+    let docs = app.path().document_dir().map_err(|e| e.to_string())?;
+    Ok(docs.join("Notepad+++ Dailys"))
+}
+
+/// Turn a topic name into something safe to use as a file stem: no path
+/// separators or characters Windows rejects, no leading/trailing dots or
+/// spaces (which also rules out `.` and `..`), and not a reserved device name.
+fn topic_stem(name: &str) -> Result<String, String> {
+    const BANNED: &str = "<>:\"/\\|?*";
+    let cleaned: String = name
+        .chars()
+        .filter(|c| !c.is_control() && !BANNED.contains(*c))
+        .take(60)
+        .collect();
+    let stem = cleaned.trim_matches(|c: char| c == '.' || c.is_whitespace()).to_string();
+    if stem.is_empty() {
+        return Err("Topic name can't be empty".into());
+    }
+    let upper = stem.to_ascii_uppercase();
+    let base = upper.split('.').next().unwrap_or("");
+    let reserved = ["CON", "PRN", "AUX", "NUL"].contains(&base)
+        || ((base.starts_with("COM") || base.starts_with("LPT"))
+            && base.len() == 4
+            && base.as_bytes()[3].is_ascii_digit());
+    if reserved {
+        return Err(format!("\"{stem}\" is a reserved name on Windows"));
+    }
+    Ok(stem)
+}
+
+fn topic_path(dir: &std::path::Path, name: &str) -> Result<PathBuf, String> {
+    Ok(dir.join(format!("{}.md", topic_stem(name)?)))
+}
+
+#[derive(Serialize)]
+struct DailysIndex {
+    dir: String,
+    topics: Vec<String>,
+}
+
+/// The folder in use and the topics in it, alphabetically.
+#[tauri::command]
+fn dailys_list(app: AppHandle, state: State<'_, Mutex<Config>>) -> Result<DailysIndex, String> {
+    let dir = dailys_dir(&app, &state)?;
+    let mut topics = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_file() && p.extension().is_some_and(|x| x.eq_ignore_ascii_case("md")) {
+                if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                    topics.push(stem.to_string());
+                }
+            }
+        }
+    }
+    topics.sort_by_key(|t| t.to_lowercase());
+    Ok(DailysIndex { dir: dir.to_string_lossy().into_owned(), topics })
+}
+
+#[tauri::command]
+fn dailys_read(app: AppHandle, state: State<'_, Mutex<Config>>, topic: String) -> Result<String, String> {
+    let path = topic_path(&dailys_dir(&app, &state)?, &topic)?;
+    match std::fs::read_to_string(&path) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(format!("Couldn't read {}: {e}", path.display())),
+    }
+}
+
+/// Start a new topic file. Returns the name actually used (after cleaning).
+#[tauri::command]
+fn dailys_create(app: AppHandle, state: State<'_, Mutex<Config>>, topic: String) -> Result<String, String> {
+    use std::io::Write;
+    let dir = dailys_dir(&app, &state)?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Couldn't create {}: {e}", dir.display()))?;
+    let stem = topic_stem(&topic)?;
+    let path = dir.join(format!("{stem}.md"));
+    // create_new: never clobber an existing log.
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => format!("A topic called \"{stem}\" already exists"),
+            _ => format!("Couldn't create {}: {e}", path.display()),
+        })?;
+    writeln!(f, "# {stem}").map_err(|e| e.to_string())?;
+    Ok(stem)
+}
+
+/// Append one already-formatted entry to the end of a topic's log.
+#[tauri::command]
+fn dailys_append(
+    app: AppHandle,
+    state: State<'_, Mutex<Config>>,
+    topic: String,
+    text: String,
+) -> Result<(), String> {
+    use std::io::Write;
+    let dir = dailys_dir(&app, &state)?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Couldn't create {}: {e}", dir.display()))?;
+    let path = topic_path(&dir, &topic)?;
+    // Keep a blank line between the previous entry and this one even if the
+    // file was last saved by an editor that drops the trailing newline.
+    let sep = match std::fs::read(&path) {
+        Ok(b) if b.is_empty() || b.ends_with(b"\n\n") => "",
+        Ok(b) if b.ends_with(b"\n") => "\n",
+        Ok(_) => "\n\n",
+        Err(_) => "",
+    };
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&path)
+        .map_err(|e| format!("Couldn't open {}: {e}", path.display()))?;
+    f.write_all(format!("{sep}{text}").as_bytes())
+        .and_then(|_| f.sync_all())
+        .map_err(|e| format!("Couldn't save to {}: {e}", path.display()))
+}
+
+/// Rename a topic's file, and its `# Title` line if it still matches.
+#[tauri::command]
+fn dailys_rename(
+    app: AppHandle,
+    state: State<'_, Mutex<Config>>,
+    from: String,
+    to: String,
+) -> Result<String, String> {
+    let dir = dailys_dir(&app, &state)?;
+    let from_stem = topic_stem(&from)?;
+    let old = dir.join(format!("{from_stem}.md"));
+    let stem = topic_stem(&to)?;
+    let new = dir.join(format!("{stem}.md"));
+    // Windows paths are case-insensitive, so "foo" -> "Foo" is the same file.
+    let same_file = from_stem.to_lowercase() == stem.to_lowercase();
+    if !same_file && new.exists() {
+        return Err(format!("A topic called \"{stem}\" already exists"));
+    }
+    std::fs::rename(&old, &new).map_err(|e| format!("Couldn't rename: {e}"))?;
+    if let Ok(body) = std::fs::read_to_string(&new) {
+        let first = body.lines().next().unwrap_or("");
+        if first.trim_end() == format!("# {from_stem}") {
+            let rest = &body[first.len()..];
+            let _ = std::fs::write(&new, format!("# {stem}{rest}"));
+        }
+    }
+    Ok(stem)
+}
+
+/// Show the Dailys folder in Explorer.
+#[tauri::command]
+fn dailys_open_folder(app: AppHandle, state: State<'_, Mutex<Config>>) -> Result<(), String> {
+    let dir = dailys_dir(&app, &state)?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::process::Command::new("explorer")
+        .arg(&dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Open a source link in the default browser. Web links only, so a log entry
+/// can never be used to launch an arbitrary program.
+#[tauri::command]
+fn open_link(url: String) -> Result<(), String> {
+    let u = reqwest::Url::parse(&url).map_err(|_| "not a valid link".to_string())?;
+    if u.scheme() != "http" && u.scheme() != "https" {
+        return Err("only http(s) links can be opened".into());
+    }
+    std::process::Command::new("explorer")
+        .arg(u.as_str())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -351,7 +549,14 @@ pub fn run() {
             get_config,
             save_config,
             submit_entry,
-            fetch_recent
+            fetch_recent,
+            dailys_list,
+            dailys_read,
+            dailys_create,
+            dailys_append,
+            dailys_rename,
+            dailys_open_folder,
+            open_link
         ])
         .on_window_event(|window, event| {
             // Closing (or Esc-triggered close) hides to tray instead of quitting,

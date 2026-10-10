@@ -124,6 +124,29 @@
             </div>
           </section>
 
+          <!-- ============ DAILYS (one log per topic) ============ -->
+          <section id="dailys" class="view">
+            <div class="doc-tabs" id="topic-tabs"></div>
+            <div class="log" id="log"></div>
+            <div class="compose">
+              <textarea
+                id="daily-ta"
+                class="daily-ta"
+                spellcheck="true"
+                placeholder="what are you thinking about?"></textarea>
+              <div class="compose-row">
+                <div class="box sketch sketch--b src-box">
+                  <input id="daily-src" spellcheck="false" placeholder="sources (paste links)" />
+                </div>
+                <button type="button" id="daily-log" class="log-btn" title="Log entry (Ctrl+Enter)">log</button>
+              </div>
+              <div class="compose-meta">
+                <span id="daily-wc">0 words</span>
+                <button type="button" id="daily-folder" class="linkback">open folder</button>
+              </div>
+            </div>
+          </section>
+
           <!-- ============ SETTINGS ============ -->
           <section id="settings" class="view">
             <div class="field">
@@ -133,6 +156,10 @@
             <div class="field">
               <label for="token">Secret token <span class="hint">— the SECRET in Code.gs, not the URL</span></label>
               <div class="box sketch sketch--b"><input id="token" type="password" spellcheck="false" placeholder="shared secret" /></div>
+            </div>
+            <div class="field">
+              <label for="dailys-dir">Dailys folder <span class="hint">— blank = default; a Google Drive folder syncs them</span></label>
+              <div class="box sketch"><input id="dailys-dir" spellcheck="false" placeholder="Documents\Notepad+++ Dailys" /></div>
             </div>
             <div class="set-actions">
               <button type="button" id="save-settings" class="primary">
@@ -145,14 +172,16 @@
               <div class="sc-title">— keyboard shortcuts —</div>
               <ul class="sc-list">
                 <li><span class="keys"><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>Space</kbd></span><span class="sc-desc">open / hide the app</span></li>
-                <li><span class="keys"><kbd>Ctrl</kbd><kbd>Tab</kbd></span><span class="sc-desc">switch Notes &rlarr; Sheet</span></li>
+                <li><span class="keys"><kbd>Ctrl</kbd><kbd>Tab</kbd></span><span class="sc-desc">cycle Notes &rarr; Sheet &rarr; Dailys</span></li>
                 <li><span class="keys"><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>1</kbd></span><span class="sc-desc">go to Notes</span></li>
                 <li><span class="keys"><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>2</kbd></span><span class="sc-desc">go to Sheet</span></li>
+                <li><span class="keys"><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>3</kbd></span><span class="sc-desc">go to Dailys</span></li>
+                <li><span class="keys"><kbd>Ctrl</kbd><kbd>Enter</kbd></span><span class="sc-desc">log entry (on Dailys)</span></li>
                 <li><span class="keys"><kbd>Enter</kbd></span><span class="sc-desc">save entry (on Sheet)</span></li>
-                <li><span class="keys"><kbd>F2</kbd></span><span class="sc-desc">rename the open note tab</span></li>
+                <li><span class="keys"><kbd>F2</kbd></span><span class="sc-desc">rename the open note / topic</span></li>
                 <li><span class="keys"><kbd>Esc</kbd></span><span class="sc-desc">hide to tray</span></li>
               </ul>
-              <div class="sc-note">notes: double-click (or right-click / <b>F2</b>) a tab to rename &middot; <b>+</b> new &middot; <b>&times;</b> close</div>
+              <div class="sc-note">drag the corner (or any edge) to resize &middot; double-click the corner to reset<br />notes: double-click (or right-click / <b>F2</b>) a tab to rename &middot; <b>+</b> new &middot; <b>&times;</b> close</div>
             </div>
             <div class="ver-row">
               <span class="ver" id="app-ver">v0.3.0</span>
@@ -168,6 +197,9 @@
           </button>
           <button type="button" class="tab" data-tab="sheet" title="Sheet  (Ctrl+Alt+2)">
             <span class="tab-lbl">Sheet</span><span class="tab-key">2</span>
+          </button>
+          <button type="button" class="tab" data-tab="dailys" title="Dailys  (Ctrl+Alt+3)">
+            <span class="tab-lbl">Dailys</span><span class="tab-key">3</span>
           </button>
           <span class="rail-sp"></span>
           <button type="button" class="tab tab--gear" data-tab="settings" id="nav-settings" title="Settings" aria-label="Settings">
@@ -187,6 +219,14 @@
       </div>
 
       <div id="flash" class="flash" role="status"></div>
+
+      <!-- resize grip: drag to resize, double-click to reset -->
+      <div class="grip" id="grip" title="Drag to resize · double-click to reset" aria-hidden="true">
+        <svg viewBox="0 0 14 14">
+          <path d="M12.6 4.4 C 9.8 7.1, 7.3 9.8, 4.3 12.7" />
+          <path d="M12.7 8.6 C 11.4 9.9, 10.1 11.2, 8.5 12.6" />
+        </svg>
+      </div>
     </div>
   </body>
 </html>

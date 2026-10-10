@@ -1,6 +1,6 @@
 [package]
 name = "notepad-plus-plus-plus"
-version = "0.3.2"
+version = "0.3.3"
 description = "Notepad+++ — a tray notepad with a Google Sheet quick-add"
 authors = ["Matthew Tershi"]
 edition = "2021"

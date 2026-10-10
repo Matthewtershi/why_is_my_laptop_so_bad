@@ -24,6 +24,14 @@ Company │ Date Submitted │ Link │ Status
     (`×`). Notes persist in the WebView's `localStorage`, so closing/reopening
     keeps everything.
   - **Sheet** — the internship quick-add (below).
+  - **Dailys** — a writing log, one topic per tab. Type your thoughts, paste
+    source links, **Ctrl+Enter** to log. Each topic is a plain Markdown file in
+    `Documents\Notepad+++ Dailys\` (changeable in Settings — point it at a
+    Google Drive / OneDrive folder to sync). Entries are only ever appended,
+    under a `## yyyy-MM-dd (Day) HH:mm` heading; unsent drafts survive hiding
+    the window. Delete a topic by deleting its file ("open folder").
+- **Resizable:** drag any edge or the corner grip; the size is remembered.
+  Double-click the grip to reset to the default.
 - **No Google Cloud / OAuth:** writes through a ~15-line Apps Script web app.
 
 ---
