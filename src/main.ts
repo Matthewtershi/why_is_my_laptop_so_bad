@@ -5,6 +5,7 @@ import { LogicalSize } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { enableLists } from "./lists";
 
 const appWindow = getCurrentWindow();
 
@@ -20,8 +21,11 @@ const views = [$("notes"), $("sheet"), $("dailys"), $("settings")];
 const tabs = Array.from(document.querySelectorAll<HTMLElement>(".tab"));
 
 const docTabs = $("doc-tabs");
-const gutter = $("gutter");
+const gutterIn = $("gutter-in");
 const ta = $<HTMLTextAreaElement>("ta");
+const editorEl = $("editor");
+const trashPanel = $("trash-panel");
+const trashRows = $("trash-rows");
 
 const topicTabs = $("topic-tabs");
 const logEl = $("log");
@@ -74,6 +78,12 @@ function showFlash(msg: string, kind: "ok" | "err" | "" = "") {
 // =====================================================================
 const LS_NOTES = "np3.notes";
 const LS_ACTIVE = "np3.active";
+// Deleted notes, newest first. Capped so it can't grow forever; the oldest
+// fall off the end.
+const LS_TRASH = "np3.trash";
+const TRASH_MAX = 50;
+type TrashedNote = Note & { deletedAt: number };
+let trash: TrashedNote[] = [];
 let notes: Note[] = [];
 let activeId = "";
 let notesTimer: number | undefined;
@@ -90,9 +100,18 @@ function loadNotesStore() {
   if (!Array.isArray(notes) || notes.length === 0) notes = [{ id: uid(), name: "Note 1", body: "" }];
   activeId = localStorage.getItem(LS_ACTIVE) || notes[0].id;
   if (!notes.some((n) => n.id === activeId)) activeId = notes[0].id;
+  try {
+    trash = JSON.parse(localStorage.getItem(LS_TRASH) || "[]");
+  } catch {
+    trash = [];
+  }
+  if (!Array.isArray(trash)) trash = [];
 }
 function persistNotes() {
   clearTimeout(notesTimer);
+  // Trash first: if anything dies between the two writes, a deleted note is
+  // left in both places rather than in neither.
+  localStorage.setItem(LS_TRASH, JSON.stringify(trash));
   localStorage.setItem(LS_NOTES, JSON.stringify(notes));
   localStorage.setItem(LS_ACTIVE, activeId);
 }
@@ -101,19 +120,53 @@ function persistSoon() {
   notesTimer = window.setTimeout(persistNotes, 250);
 }
 
+// Lines wrap, so a number has to sit at the top of however many rows its
+// line takes up. An invisible copy of the textarea, one block per real line,
+// measures that height; each number is then given exactly that much room.
+const mirror = document.createElement("div");
+mirror.className = "ta ta-mirror";
+mirror.setAttribute("aria-hidden", "true");
+editorEl.appendChild(mirror);
+let gutterFrame = 0;
+
 function updateGutter() {
-  const lines = ta.value.split("\n").length || 1;
-  let s = "";
-  for (let i = 1; i <= lines; i++) s += i + (i < lines ? "\n" : "");
-  gutter.textContent = s;
-  gutter.scrollTop = ta.scrollTop;
+  cancelAnimationFrame(gutterFrame);
+  gutterFrame = requestAnimationFrame(layoutGutter);
 }
+
+function layoutGutter() {
+  // Hidden (another tab is showing): nothing to measure against. The resize
+  // observer runs this again once the editor is back on screen.
+  if (ta.clientWidth === 0) return;
+  mirror.style.width = `${ta.clientWidth}px`;
+  const blocks = ta.value.split("\n").map((line) => {
+    const d = document.createElement("div");
+    d.textContent = line || "\u200b"; // an empty line still takes one row
+    return d;
+  });
+  mirror.replaceChildren(...blocks);
+  const nums = blocks.map((b, i) => {
+    const n = document.createElement("div");
+    n.textContent = String(i + 1);
+    // Fractional heights, or rounding drifts the numbers off over long notes.
+    n.style.height = `${b.getBoundingClientRect().height}px`;
+    return n;
+  });
+  gutterIn.replaceChildren(...nums);
+  mirror.replaceChildren();
+  syncGutterScroll();
+}
+
+function syncGutterScroll() {
+  gutterIn.style.transform = `translateY(${-ta.scrollTop}px)`;
+}
+
+new ResizeObserver(updateGutter).observe(ta);
 
 function loadActiveIntoEditor() {
   ta.value = activeNote().body;
-  updateGutter();
   ta.scrollTop = 0;
-  gutter.scrollTop = 0;
+  updateGutter();
 }
 
 function nextName() {
@@ -164,6 +217,20 @@ function renderDocTabs() {
   add.title = "new note";
   add.addEventListener("click", addDoc);
   docTabs.appendChild(add);
+  if (trash.length) {
+    const bin = document.createElement("button");
+    bin.type = "button";
+    bin.className = "icon icon--sm doc-trash" + (trashPanel.hidden ? "" : " is-active");
+    bin.title = `deleted notes (${trash.length}) — Ctrl+Shift+T brings back the last one`;
+    bin.setAttribute("aria-label", "deleted notes");
+    bin.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M5.4 7.2 C 9.8 6.9, 14.3 7.1, 18.7 7" />
+      <path d="M9.6 6.8 C 9.7 5.4, 10.4 4.6, 12 4.6 C 13.7 4.6, 14.3 5.4, 14.4 6.9" />
+      <path d="M7.2 7.5 C 7.6 11.6, 7.9 15.6, 8.4 19.3 C 10.8 19.6, 13.2 19.6, 15.6 19.3 C 16.1 15.6, 16.4 11.6, 16.8 7.5" />
+    </svg>`;
+    bin.addEventListener("click", () => (trashPanel.hidden ? openTrash() : closeTrash()));
+    docTabs.appendChild(bin);
+  }
 }
 
 // Repaint the highlight in place. Rebuilding the tab strip here would replace
@@ -177,6 +244,7 @@ function markActiveDocTab() {
 }
 
 function switchDoc(id: string) {
+  closeTrash();
   if (id === activeId) return;
   activeId = id;
   loadActiveIntoEditor();
@@ -186,6 +254,7 @@ function switchDoc(id: string) {
 }
 
 function addDoc() {
+  closeTrash();
   const n: Note = { id: uid(), name: nextName(), body: "" };
   notes.push(n);
   activeId = n.id;
@@ -207,7 +276,13 @@ function renameActiveDoc() {
 function deleteDoc(id: string) {
   const idx = notes.findIndex((n) => n.id === id);
   if (idx < 0) return;
-  notes.splice(idx, 1);
+  const [gone] = notes.splice(idx, 1);
+  // An empty note isn't worth keeping; anything with writing in it is.
+  if (gone.body.trim()) {
+    trash.unshift({ ...gone, deletedAt: Date.now() });
+    trash.length = Math.min(trash.length, TRASH_MAX);
+    showFlash(`deleted "${gone.name}" — Ctrl+Shift+T brings it back`);
+  }
   if (notes.length === 0) notes.push({ id: uid(), name: "Note 1", body: "" });
   if (activeId === id) activeId = notes[Math.min(idx, notes.length - 1)].id;
   loadActiveIntoEditor();
@@ -215,6 +290,73 @@ function deleteDoc(id: string) {
   persistNotes();
   setTimeout(() => ta.focus(), 10);
 }
+
+// ---- deleted notes ----
+function restoreNote(id?: string) {
+  const idx = id ? trash.findIndex((t) => t.id === id) : 0;
+  const t = trash[idx];
+  if (!t) return showFlash("no deleted notes to bring back");
+  trash.splice(idx, 1);
+  const { deletedAt: _, ...note } = t;
+  if (notes.some((n) => n.id === note.id)) note.id = uid();
+  // Coming back into an untouched blank tab (e.g. the "Note 1" left behind
+  // after deleting the last note): take its place instead of sitting beside it.
+  const blank = notes.length === 1 && !notes[0].body ? 0 : -1;
+  if (blank === 0) notes[0] = note;
+  else notes.push(note);
+  activeId = note.id;
+  closeTrash();
+  loadActiveIntoEditor();
+  renderDocTabs();
+  persistNotes();
+  showFlash(`restored "${note.name}" ✓`, "ok");
+  setTimeout(() => ta.focus(), 10);
+}
+
+const ago = (ms: number) => {
+  const m = Math.round((Date.now() - ms) / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  if (m < 60 * 24) return `${Math.round(m / 60)}h ago`;
+  if (m < 60 * 24 * 14) return `${Math.round(m / 1440)}d ago`;
+  return new Date(ms).toLocaleDateString();
+};
+
+function openTrash() {
+  trashRows.innerHTML = "";
+  for (const t of trash) {
+    const li = document.createElement("li");
+    li.title = "click to bring this note back";
+    const co = document.createElement("span");
+    co.className = "co";
+    co.textContent = t.name;
+    const pv = document.createElement("span");
+    pv.className = "pv";
+    pv.textContent = `${t.body.trim().split("\n")[0].slice(0, 40)}`;
+    const dt = document.createElement("span");
+    dt.className = "dt";
+    dt.textContent = ago(t.deletedAt);
+    li.append(co, pv, dt);
+    li.addEventListener("click", () => restoreNote(t.id));
+    trashRows.appendChild(li);
+  }
+  editorEl.hidden = true;
+  trashPanel.hidden = false;
+  renderDocTabs();
+}
+
+function closeTrash() {
+  if (trashPanel.hidden) return;
+  trashPanel.hidden = true;
+  editorEl.hidden = false;
+  renderDocTabs();
+  updateGutter();
+}
+
+$("trash-close").addEventListener("click", () => {
+  closeTrash();
+  setTimeout(() => ta.focus(), 10);
+});
 
 function renameNote(tab: HTMLElement, n: Note) {
   beginRename(
@@ -281,9 +423,8 @@ ta.addEventListener("input", () => {
   updateGutter();
   persistSoon();
 });
-ta.addEventListener("scroll", () => {
-  gutter.scrollTop = ta.scrollTop;
-});
+ta.addEventListener("scroll", syncGutterScroll);
+enableLists(ta);
 ta.addEventListener("blur", persistNotes);
 
 // =====================================================================
@@ -562,6 +703,7 @@ function saveDraftSoon() {
   draftsTimer = window.setTimeout(persistDrafts, 250);
 }
 
+enableLists(dailyTa);
 dailyTa.addEventListener("input", () => {
   updateWordCount();
   saveDraftSoon();
@@ -926,6 +1068,12 @@ window.addEventListener("keydown", (e) => {
     showTab(order[(order.indexOf(activeTab) + 1) % order.length]);
     return;
   }
+  // Ctrl+Shift+T: bring back the last deleted note, like reopening a browser tab.
+  if (e.ctrlKey && e.shiftKey && !e.altKey && e.code === "KeyT" && activeTab === "notes") {
+    e.preventDefault();
+    restoreNote();
+    return;
+  }
   if (e.ctrlKey && e.key === "Enter" && activeTab === "dailys") {
     e.preventDefault();
     void logEntry();
@@ -957,6 +1105,12 @@ window.addEventListener("keydown", (e) => {
   }
   if (e.key === "Escape") {
     e.preventDefault();
+    // Esc backs out of the deleted-notes list before it hides the window.
+    if (activeTab === "notes" && !trashPanel.hidden) {
+      closeTrash();
+      setTimeout(() => ta.focus(), 10);
+      return;
+    }
     persistNotes();
     persistDrafts();
     appWindow.hide();

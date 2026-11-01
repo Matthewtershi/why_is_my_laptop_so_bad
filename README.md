@@ -22,7 +22,13 @@ Company │ Date Submitted │ Link │ Status
     multiple named tabs you can add (`+`), rename (double-click, right-click,
     or `F2` — a new tab opens straight into its name field), and close
     (`×`). Notes persist in the WebView's `localStorage`, so closing/reopening
-    keeps everything.
+    keeps everything. Long lines wrap to the window; the gutter numbers real
+    lines only. Closing a note moves it to a trash (the bin icon in the tab
+    strip, last 50 kept) — **Ctrl+Shift+T** brings the most recent one back.
+  - **Lists** (Notes and Dailys): start a line with `-`, `*`, `1.` or
+    `- [ ]` and Enter continues the list at the same indent; Enter on an empty
+    item ends it; **Tab / Shift+Tab** nest and un-nest. Shift+Enter is a
+    plain newline.
   - **Sheet** — the internship quick-add (below).
   - **Dailys** — a writing log, one topic per tab. Type your thoughts, paste
     source links, **Ctrl+Enter** to log. Each topic is a plain Markdown file in

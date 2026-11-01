@@ -47,14 +47,22 @@
           <!-- ============ NOTES ============ -->
           <section id="notes" class="view is-active">
             <div class="doc-tabs" id="doc-tabs"></div>
-            <div class="editor">
-              <div class="gutter" id="gutter">1</div>
+            <div class="editor" id="editor">
+              <div class="gutter"><div class="gutter-in" id="gutter-in"></div></div>
               <textarea
                 id="ta"
                 class="ta"
-                wrap="off"
+                wrap="soft"
                 spellcheck="true"
                 placeholder="type your notes…"></textarea>
+            </div>
+            <!-- deleted notes, newest first; swaps in for the editor -->
+            <div class="trash-panel" id="trash-panel" hidden>
+              <div class="list-head">
+                <span>Deleted notes — click one to bring it back</span>
+                <button type="button" id="trash-close" class="linkback">back</button>
+              </div>
+              <ul id="trash-rows" class="rows"></ul>
             </div>
           </section>
 
@@ -178,10 +186,12 @@
                 <li><span class="keys"><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>3</kbd></span><span class="sc-desc">go to Dailys</span></li>
                 <li><span class="keys"><kbd>Ctrl</kbd><kbd>Enter</kbd></span><span class="sc-desc">log entry (on Dailys)</span></li>
                 <li><span class="keys"><kbd>Enter</kbd></span><span class="sc-desc">save entry (on Sheet)</span></li>
+                <li><span class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>T</kbd></span><span class="sc-desc">bring back the last deleted note</span></li>
+                <li><span class="keys"><kbd>Tab</kbd></span><span class="sc-desc">nest a list item (Shift+Tab un-nests)</span></li>
                 <li><span class="keys"><kbd>F2</kbd></span><span class="sc-desc">rename the open note / topic</span></li>
                 <li><span class="keys"><kbd>Esc</kbd></span><span class="sc-desc">hide to tray</span></li>
               </ul>
-              <div class="sc-note">drag the corner (or any edge) to resize &middot; double-click the corner to reset<br />notes: double-click (or right-click / <b>F2</b>) a tab to rename &middot; <b>+</b> new &middot; <b>&times;</b> close</div>
+              <div class="sc-note">drag the corner (or any edge) to resize &middot; double-click the corner to reset<br />lists: start a line with <b>-</b> or <b>1.</b> and Enter continues it &middot; Enter on an empty item ends it<br />notes: double-click (or right-click / <b>F2</b>) a tab to rename &middot; <b>+</b> new &middot; <b>&times;</b> close</div>
             </div>
             <div class="ver-row">
               <span class="ver" id="app-ver">v0.3.0</span>

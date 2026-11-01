@@ -246,6 +246,20 @@ body {
   transition: color .12s, transform .12s;
 }
 .doc-add:hover { color: var(--ink); transform: rotate(90deg); }
+.doc-trash { flex: 0 0 auto; margin-left: auto; align-self: center; }
+.doc-trash.is-active { background: rgba(255, 227, 110, .55); }
+
+/* ---------- NOTEPAD: deleted notes ---------- */
+.editor[hidden], .trash-panel[hidden] { display: none; }
+.trash-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 14px 10px 12px;
+}
+.trash-panel .linkback { margin-top: 0; font-size: 12px; }
+.rows .pv { color: var(--ink-faint); font-size: 12px; }
 
 /* ---------- NOTEPAD: line-numbered editor ---------- */
 .editor {
@@ -260,7 +274,7 @@ body {
   overflow: hidden;
   padding: 10px 6px 10px 0;
   text-align: right;
-  white-space: pre;
+  white-space: nowrap;
   font-family: var(--hand);
   font-size: 15px;
   line-height: 1.65;
@@ -285,11 +299,22 @@ body {
   line-height: 1.65;
   color: var(--ink);
   caret-color: var(--ink);
-  white-space: pre;
-  overflow: auto;
+  /* Long lines wrap to the window; the gutter numbers real lines only.
+     .ta-mirror measures with these exact rules, so keep them in step. */
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  overflow-x: hidden;
+  overflow-y: auto;
   user-select: text;
   -webkit-user-select: text;
   tab-size: 4;
+}
+.gutter-in { will-change: transform; }
+.gutter-in > div { overflow: hidden; }
+.ta-mirror {
+  position: absolute; left: 0; top: 0;
+  height: auto; overflow: hidden;
+  visibility: hidden; pointer-events: none;
 }
 .ta::placeholder { color: var(--ink-faint); }
 .ta::-webkit-scrollbar { width: 9px; height: 9px; }
